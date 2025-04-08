@@ -1,0 +1,6 @@
+---
+- name: test
+  hosts: all
+  tasks:
+    - name: Reiniciar la maquina windows
+      ansible.windows.win_reboot:

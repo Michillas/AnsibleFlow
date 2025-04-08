@@ -2,5 +2,6 @@
 - name: test
   hosts: all
   tasks:
-    - name: Reboot the machine with all defaults
-      ansible.windows.win_reboot:
+    - name: test
+      debug:
+        msg: 'test'

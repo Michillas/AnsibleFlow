@@ -1,0 +1,8 @@
+---
+- name: test
+  hosts: all
+  tasks:
+    - name: Crear carpeta
+      ansible.windows.win_file:
+        path: C:\Users\elric\Desktop\carpeta
+        state: directory
