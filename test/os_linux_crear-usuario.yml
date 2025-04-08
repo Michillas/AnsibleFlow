@@ -1,0 +1,12 @@
+---
+- name: test
+  hosts: all
+  tasks:
+    - name: Create a usuario
+      ansible.builtin.user:
+        name: usuariotest
+    - name: Agregar usuario al grupo de sudo (Administrador)
+      user:
+        name: usuariotest
+        groups: wheel # CentOS, en Ubuntu/Debian es root
+        append: yes
