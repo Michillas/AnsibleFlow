@@ -2,5 +2,6 @@
 - name: test
   hosts: all
   tasks:
-    debug:
-      msg: 'test'
+    - name: test
+      debug:
+        msg: 'test'
