@@ -1,6 +1,5 @@
 ---
 # Playbook de Ansible para la instalación de IBM Installation Manager y WebSphere Application Server en CentOS 9
-# Nombre del archivo: install_websphere_centos9.yml
 
 - name: Instalación de IBM Installation Manager y WebSphere Application Server
   hosts: websphere_servers
@@ -51,6 +50,7 @@
           - tar
           - java-{{ java_version }}-openjdk
           - java-{{ java_version }}-openjdk-devel
+          - policycoreutils-python-utils  # Necesario para comandos de SELinux
         state: present
 
     - name: Verificar requisitos del sistema
@@ -103,16 +103,23 @@
         - "{{ tmp_dir }}/IM"
         - "{{ tmp_dir }}/WAS"
 
+    # Reemplazamos el módulo sefcontext con comandos directos
     - name: Configurar contexto SELinux para directorios IBM
-      sefcontext:
-        target: '{{ ibm_base_dir }}(/.*)?'
-        setype: httpd_sys_content_t
-        state: present
+      command: semanage fcontext -a -t httpd_sys_content_t '{{ ibm_base_dir }}(/.*)?'
       register: se_context
+      changed_when: true
+      failed_when: false # Continuará incluso si falla
 
     - name: Aplicar contexto SELinux
       command: restorecon -Rv {{ ibm_base_dir }}
-      when: se_context.changed
+      when: se_context.rc == 0
+      failed_when: false
+
+    - name: Establecer SELinux en modo permisivo durante la instalación
+      command: setenforce 0
+      register: selinux_permissive
+      changed_when: true
+      failed_when: false
 
     - name: Copiar instaladores al servidor
       copy:
@@ -210,10 +217,9 @@
         msg: "WebSphere Application Server instalado correctamente"
 
     - name: Configurar permisos SELinux para WebSphere
-      seboolean:
-        name: httpd_can_network_connect
-        state: yes
-        persistent: yes
+      command: setsebool -P httpd_can_network_connect 1
+      changed_when: true
+      failed_when: false
 
     - name: Crear perfil WebSphere
       command: >
@@ -276,13 +282,17 @@
         - 9043  # Puerto HTTPS consola admin
         - 9060  # Puerto bootstrap
         - 9080  # Puerto HTTP
-      when: ansible_os_family == "RedHat"
       ignore_errors: yes
 
     - name: Reiniciar firewall
       command: firewall-cmd --reload
-      when: ansible_os_family == "RedHat"
       ignore_errors: yes
+      changed_when: true
+
+    - name: Restaurar modo SELinux si se cambió
+      command: setenforce 1
+      when: selinux_permissive is defined and selinux_permissive.rc == 0
+      failed_when: false
       changed_when: true
 
     - name: Información para acceder a la consola administrativa
