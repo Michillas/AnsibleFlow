@@ -1,0 +1,304 @@
+---
+# Playbook de Ansible para la instalación de IBM Installation Manager y WebSphere Application Server en CentOS 9
+# Nombre del archivo: install_websphere_centos9.yml
+
+- name: Instalación de IBM Installation Manager y WebSphere Application Server
+  hosts: websphere_servers
+  become: yes
+  vars:
+    # Directorio base de IBM
+    ibm_base_dir: /opt/IBM
+    # Directorio de IBM Installation Manager
+    im_install_dir: "{{ ibm_base_dir }}/InstallationManager"
+    # Directorio de WebSphere Application Server
+    was_install_dir: "{{ ibm_base_dir }}/WebSphere/AppServer"
+    # Directorio temporal para instaladores
+    tmp_dir: /tmp/ibm_installers
+    # Nombre del archivo de instalador de IBM Installation Manager
+    im_installer: agent.installer.linux.gtk.x86_64.zip
+    # Nombre del archivo de instalador de WebSphere Application Server
+    was_installer: WAS_ND_V9.0_MP_ML.zip
+    # Directorio local donde se encuentran los instaladores
+    local_installers_dir: ./installers
+    # Contraseña del administrador de WebSphere
+    was_admin_password: password123
+    # Perfil de WebSphere
+    was_profile_name: AppSrv01
+    # Nombre del nodo
+    was_node_name: Node01
+    # Nombre de la celda
+    was_cell_name: Cell01
+    # Nombre del servidor
+    was_server_name: server1
+    # Usuario administrador de WebSphere
+    was_admin_user: wasadmin
+    # Versión de Java a instalar
+    java_version: "1.8.0"
+
+  tasks:
+    - name: Comprobar sistema operativo
+      fail:
+        msg: "Este playbook está diseñado para CentOS/RHEL 9"
+      when: ansible_distribution != "CentOS" and ansible_distribution != "RedHat" and ansible_distribution_major_version != "9"
+      ignore_errors: yes
+      
+    - name: Instalar dependencias necesarias
+      dnf:
+        name:
+          - unzip
+          - net-tools
+          - wget
+          - tar
+          - java-{{ java_version }}-openjdk
+          - java-{{ java_version }}-openjdk-devel
+        state: present
+
+    - name: Verificar requisitos del sistema
+      block:
+        - name: Verificar memoria
+          shell: free -g | awk '/^Mem:/{print $2}'
+          register: mem_size
+          changed_when: false
+
+        - name: Verificar espacio en disco
+          shell: df -BG / | awk 'NR==2 {print $4}' | sed 's/G//'
+          register: disk_space
+          changed_when: false
+
+        - name: Verificar version de Java
+          shell: java -version 2>&1 | grep -i version
+          register: java_version_output
+          changed_when: false
+
+        - name: Mostrar mensaje de error si no cumple requisitos
+          fail:
+            msg: "El sistema no cumple con los requisitos mínimos: RAM >= 4GB, Espacio en disco >= 10GB, Java 8+"
+          when: mem_size.stdout|int < 4 or disk_space.stdout|int < 10 or java_version_output.rc != 0
+
+    - name: Configurar variables de entorno para Java
+      blockinfile:
+        path: /etc/profile.d/java.sh
+        create: yes
+        mode: '0644'
+        block: |
+          export JAVA_HOME=$(dirname $(dirname $(readlink -f $(which java))))
+          export PATH=$JAVA_HOME/bin:$PATH
+      
+    - name: Cargar variables de entorno
+      shell: source /etc/profile.d/java.sh
+      args:
+        executable: /bin/bash
+      changed_when: false
+
+    - name: Crear directorios necesarios
+      file:
+        path: "{{ item }}"
+        state: directory
+        mode: '0755'
+      loop:
+        - "{{ ibm_base_dir }}"
+        - "{{ im_install_dir }}"
+        - "{{ was_install_dir }}"
+        - "{{ tmp_dir }}"
+        - "{{ tmp_dir }}/IM"
+        - "{{ tmp_dir }}/WAS"
+
+    - name: Configurar contexto SELinux para directorios IBM
+      sefcontext:
+        target: '{{ ibm_base_dir }}(/.*)?'
+        setype: httpd_sys_content_t
+        state: present
+      register: se_context
+
+    - name: Aplicar contexto SELinux
+      command: restorecon -Rv {{ ibm_base_dir }}
+      when: se_context.changed
+
+    - name: Copiar instaladores al servidor
+      copy:
+        src: "{{ local_installers_dir }}/{{ item }}"
+        dest: "{{ tmp_dir }}/{{ item }}"
+      loop:
+        - "{{ im_installer }}"
+        - "{{ was_installer }}"
+
+    - name: Descomprimir IBM Installation Manager
+      unarchive:
+        src: "{{ tmp_dir }}/{{ im_installer }}"
+        dest: "{{ tmp_dir }}/IM"
+        remote_src: yes
+        creates: "{{ tmp_dir }}/IM/installc"
+
+    - name: Crear archivo de respuestas para IBM Installation Manager
+      copy:
+        content: |
+          <?xml version="1.0" encoding="UTF-8"?>
+          <agent-input>
+            <profile id="IBM Installation Manager" installLocation="{{ im_install_dir }}">
+              <data key="cic.selector.os" value="linux"/>
+            </profile>
+            <install>
+              <offering id="com.ibm.cic.agent" version="1.9.0.20200416_1034" profile="IBM Installation Manager" features="agent_core,agent_jre" installFixes="none"/>
+            </install>
+            <preference name="offering.service.repositories.areUsed" value="false"/>
+            <preference name="com.ibm.cic.common.core.preferences.preserveDownloadedArtifacts" value="true"/>
+          </agent-input>
+        dest: "{{ tmp_dir }}/im_response.xml"
+
+    - name: Instalar IBM Installation Manager
+      command: "{{ tmp_dir }}/IM/installc -acceptLicense -input {{ tmp_dir }}/im_response.xml"
+      args:
+        creates: "{{ im_install_dir }}/eclipse/tools/imcl"
+      environment:
+        JAVA_HOME: "{{ ansible_env.JAVA_HOME | default('/usr/lib/jvm/java') }}"
+
+    - name: Verificar instalación de IBM Installation Manager
+      command: "{{ im_install_dir }}/eclipse/tools/imcl version"
+      register: im_version
+      changed_when: false
+      environment:
+        JAVA_HOME: "{{ ansible_env.JAVA_HOME | default('/usr/lib/jvm/java') }}"
+
+    - name: Mostrar versión de IBM Installation Manager
+      debug:
+        msg: "IBM Installation Manager versión: {{ im_version.stdout }}"
+
+    - name: Descomprimir WebSphere Application Server
+      unarchive:
+        src: "{{ tmp_dir }}/{{ was_installer }}"
+        dest: "{{ tmp_dir }}/WAS"
+        remote_src: yes
+        creates: "{{ tmp_dir }}/WAS/repository.config"
+
+    - name: Crear archivo de respuestas para WebSphere Application Server
+      copy:
+        content: |
+          <?xml version="1.0" encoding="UTF-8"?>
+          <agent-input>
+            <profile id='IBM WebSphere Application Server' installLocation='{{ was_install_dir }}'>
+              <data key='cic.selector.os' value='linux'/>
+            </profile>
+            <install>
+              <offering id='com.ibm.websphere.ND.v90' version='9.0.0.20160526_1854' profile='IBM WebSphere Application Server' features='core.feature,ejbdeploy,thinclient,embeddablecontainer,samples,javaee.v7' installFixes='none'/>
+            </install>
+            <preference name='com.ibm.cic.common.core.preferences.eclipseCache' value='{{ tmp_dir }}'/>
+            <preference name='offering.service.repositories.areUsed' value='false'/>
+            <preference name='com.ibm.cic.common.core.preferences.preserveDownloadedArtifacts' value='false'/>
+          </agent-input>
+        dest: "{{ tmp_dir }}/was_response.xml"
+
+    - name: Instalar WebSphere Application Server
+      command: >
+        {{ im_install_dir }}/eclipse/tools/imcl install com.ibm.websphere.ND.v90 
+        -acceptLicense -input {{ tmp_dir }}/was_response.xml 
+        -repositories {{ tmp_dir }}/WAS/repository.config 
+        -log {{ tmp_dir }}/was_install_log.xml
+      args:
+        creates: "{{ was_install_dir }}/bin/versionInfo.sh"
+      environment:
+        JAVA_HOME: "{{ ansible_env.JAVA_HOME | default('/usr/lib/jvm/java') }}"
+
+    - name: Verificar instalación de WebSphere Application Server
+      command: "{{ was_install_dir }}/bin/versionInfo.sh"
+      register: was_version
+      changed_when: false
+      environment:
+        JAVA_HOME: "{{ ansible_env.JAVA_HOME | default('/usr/lib/jvm/java') }}"
+
+    - name: Mostrar versión de WebSphere Application Server
+      debug:
+        msg: "WebSphere Application Server instalado correctamente"
+
+    - name: Configurar permisos SELinux para WebSphere
+      seboolean:
+        name: httpd_can_network_connect
+        state: yes
+        persistent: yes
+
+    - name: Crear perfil WebSphere
+      command: >
+        {{ was_install_dir }}/bin/manageprofiles.sh -create 
+        -profileName {{ was_profile_name }} 
+        -profilePath {{ was_install_dir }}/profiles/{{ was_profile_name }} 
+        -templatePath {{ was_install_dir }}/profileTemplates/default 
+        -nodeName {{ was_node_name }} 
+        -cellName {{ was_cell_name }} 
+        -hostName {{ ansible_hostname }}
+      args:
+        creates: "{{ was_install_dir }}/profiles/{{ was_profile_name }}/bin/startServer.sh"
+      environment:
+        JAVA_HOME: "{{ ansible_env.JAVA_HOME | default('/usr/lib/jvm/java') }}"
+
+    - name: Iniciar el servidor WebSphere
+      command: "{{ was_install_dir }}/profiles/{{ was_profile_name }}/bin/startServer.sh {{ was_server_name }}"
+      register: start_server
+      failed_when: "'ADMU0116I' not in start_server.stdout and 'ADMU3000I' not in start_server.stdout"
+      changed_when: "'ADMU3000I' in start_server.stdout"
+      ignore_errors: yes
+      environment:
+        JAVA_HOME: "{{ ansible_env.JAVA_HOME | default('/usr/lib/jvm/java') }}"
+
+    - name: Esperar a que el servidor esté listo
+      pause:
+        seconds: 60
+      when: start_server is success
+
+    - name: Crear usuario administrativo
+      command: >
+        {{ was_install_dir }}/profiles/{{ was_profile_name }}/bin/wsadmin.sh -lang jython 
+        -c "AdminTask.createUser('[-uid {{ was_admin_user }} -password {{ was_admin_password }} -confirmPassword {{ was_admin_password }} -roleUser True]')"
+      register: create_user
+      changed_when: "'Success' in create_user.stdout or 'WASX7357I' in create_user.stdout"
+      failed_when: false
+      when: start_server is success
+      environment:
+        JAVA_HOME: "{{ ansible_env.JAVA_HOME | default('/usr/lib/jvm/java') }}"
+
+    - name: Obtener estado del servidor
+      command: "{{ was_install_dir }}/profiles/{{ was_profile_name }}/bin/serverStatus.sh {{ was_server_name }}"
+      register: server_status
+      changed_when: false
+      when: start_server is success
+      environment:
+        JAVA_HOME: "{{ ansible_env.JAVA_HOME | default('/usr/lib/jvm/java') }}"
+
+    - name: Mostrar estado del servidor
+      debug:
+        msg: "{{ server_status.stdout_lines }}"
+      when: start_server is success
+
+    - name: Configurar firewall para WebSphere
+      firewalld:
+        port: "{{ item }}/tcp"
+        permanent: yes
+        state: enabled
+      loop:
+        - 9043  # Puerto HTTPS consola admin
+        - 9060  # Puerto bootstrap
+        - 9080  # Puerto HTTP
+      when: ansible_os_family == "RedHat"
+      ignore_errors: yes
+
+    - name: Reiniciar firewall
+      command: firewall-cmd --reload
+      when: ansible_os_family == "RedHat"
+      ignore_errors: yes
+      changed_when: true
+
+    - name: Información para acceder a la consola administrativa
+      debug:
+        msg:
+          - "Instalación de WebSphere Application Server completada"
+          - "Acceso a la consola administrativa:"
+          - "URL: https://{{ ansible_hostname }}:9043/ibm/console/"
+          - "Usuario: {{ was_admin_user }}"
+          - "Contraseña: {{ was_admin_password }}"
+      when: start_server is success
+
+    - name: Limpiar archivos temporales (opcional)
+      file:
+        path: "{{ tmp_dir }}"
+        state: absent
+      tags:
+        - cleanup
+      when: false  # Por defecto no se ejecuta, usar --tags=cleanup para ejecutar
