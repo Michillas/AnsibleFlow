@@ -4,7 +4,7 @@
   tasks:
     - name: Listar carpetas
       find:
-        path: '/'
+        path: '/home'
         file_type: "any"
       register: directorios
     - name: Debug
