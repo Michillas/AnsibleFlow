@@ -5,6 +5,7 @@
     - name: Listar carpetas
       find:
         path: '/'
+        file_type: "any"
       register: directorios
     - name: Debug
       debug:
