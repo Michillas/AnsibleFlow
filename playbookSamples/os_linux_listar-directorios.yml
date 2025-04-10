@@ -1,0 +1,11 @@
+---
+- name: test
+  hosts: all
+  tasks:
+    - name: Listar carpetas
+      find:
+        path: '/'
+      register: directorios
+    - name: Debug
+      debug:
+        var: directorios
