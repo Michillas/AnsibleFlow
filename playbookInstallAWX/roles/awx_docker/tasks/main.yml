@@ -1,0 +1,119 @@
+---
+- name: "Instalar dependencias del sistema"
+  dnf:
+    name:
+      - dnf-plugins-core
+      - make
+      - git
+      - python3
+    state: present
+
+- name: "Agregar repositorio de Docker"
+  command: dnf config-manager --add-repo=https://download.docker.com/linux/centos/docker-ce.repo
+  args:
+    creates: /etc/yum.repos.d/docker-ce.repo
+
+- name: "Instalar Docker y plugins"
+  dnf:
+    name:
+      - docker-ce
+      - docker-ce-cli
+      - containerd.io
+      - docker-buildx-plugin
+      - docker-compose-plugin
+    state: present
+
+- name: "Habilitar e iniciar Docker"
+  systemd:
+    name: docker
+    enabled: true
+    state: started
+
+- name: "Reinstalar pip con dnf"
+  command: dnf reinstall -y python3-pip
+  become: true
+
+- name: "Actualizar pip"
+  pip:
+    name: pip
+    state: latest
+    executable: pip3
+  become: true
+
+- name: "Instalar Ansible"
+  pip:
+    name: ansible
+    state: latest
+    executable: pip3
+  become: true
+
+- name: Clonar el repositorio de 'n'
+  git:
+    repo: https://github.com/tj/n
+    dest: /usr/src/n
+    version: master
+  become: true
+
+- name: Instalar 'n'
+  command: make install PREFIX=/usr
+  args:
+    chdir: /usr/src/n
+  become: true
+
+- name: Instalar Node.js
+  dnf:
+    name: nodejs
+    state: present
+  become: true
+
+- name: "Clonar repositorio AWX"
+  git:
+    repo: "{{ awx_repo_url }}"
+    dest: /opt/awx
+    version: "{{ awx_version }}"
+    force: yes
+
+- name: "Agregar usuario actual al grupo docker"
+  user:
+    name: "{{ ansible_user }}"
+    groups: docker
+    append: yes
+
+
+- name: "Construir imagen AWX (docker-compose-build)"
+  make:
+    chdir: /opt/awx
+    target: docker-compose-build
+  environment:
+    PATH: "/home/{{ ansible_user }}/.local/bin:{{ ansible_env.PATH }}"
+    SSH_AUTH_SOCK: "{{ lookup('env', 'SSH_AUTH_SOCK') }}"
+
+- name: "Limpiar UI"
+  make:
+    chdir: /opt/awx
+    target: clean/ui
+
+- name: "Construir UI"
+  make:
+    chdir: /opt/awx
+    target: ui
+
+- name: "Iniciar AWX con docker-compose"
+  make:
+    chdir: /opt/awx
+    target: docker-compose
+  environment:
+    PATH: "/home/{{ ansible_user }}/.local/bin:{{ ansible_env.PATH }}"
+
+# - name: "Mostrar mensaje de acceso"
+#   debug:
+#     msg: "Accede a https://localhost:8043/. La contraseña de admin se encuentra en la consola de Docker."
+
+# - name: Cambiar contraseña del usuario admin en AWX si la variable está seteada
+#   expect:
+#     command: docker exec -i tools_awx_1 awx-manage changepassword admin
+#     responses:
+#       'Password:': "{{ admin_password }}"
+#       'Password \(again\):': "{{ admin_password }}"
+#   no_log: true
+#   when: admin_password is defined

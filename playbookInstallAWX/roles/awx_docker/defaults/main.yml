@@ -1,0 +1,5 @@
+---
+awx_version: "devel"
+awx_repo_url: "https://github.com/ansible/awx.git"
+nodejs_version: "18"
+ansible_user: "trainer"
